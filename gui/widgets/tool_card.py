@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QCheckBox,
                              QLabel, QLineEdit, QPushButton, QFrame, QSpinBox, QComboBox)
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from core.tools_db import get_tool_path, is_tool_installed
+from core.tool_adapter import ToolState, tool_registry
 from gui.widgets.theme_manager import theme_manager
 
 class ToolCardWidget(QFrame):
@@ -12,6 +12,7 @@ class ToolCardWidget(QFrame):
         super().__init__(parent)
         self.tool_key = tool_key
         self.tool_data = tool_data
+        self.adapter = tool_registry.get(tool_key)
         self.is_expanded = False
         self.option_widgets = {}
 
@@ -43,8 +44,15 @@ class ToolCardWidget(QFrame):
         header.addWidget(self.cb_enable)
 
         # Binary install badge
-        installed = is_tool_installed(tool_data["binary"])
-        self.lbl_badge = QLabel("[Kali OK]" if installed else "[Не установлен]", self)
+        health = self.adapter.health_check()
+        installed = health.state == ToolState.READY
+        badge_text = {
+            ToolState.READY: "[Ready]",
+            ToolState.MISSING: "[Не установлен]",
+            ToolState.NOT_CONFIGURED: "[Нужен API ключ]",
+            ToolState.ERROR: "[Ошибка]",
+        }[health.state]
+        self.lbl_badge = QLabel(badge_text, self)
         if installed:
             self.lbl_badge.setStyleSheet(f"color: {t['success']}; font-size: 10px; font-weight: bold;")
         else:
@@ -101,7 +109,7 @@ class ToolCardWidget(QFrame):
         details_layout.addWidget(lbl_desc)
 
         # Binary path info
-        bin_path = get_tool_path(tool_data["binary"])
+        bin_path = health.path or f"[Не найдено в PATH: {tool_data['binary']}]"
         lbl_path = QLabel(f"📍 Путь: {bin_path}", self)
         lbl_path.setStyleSheet("color: #7f8c8d; font-size: 10px;")
         details_layout.addWidget(lbl_path)

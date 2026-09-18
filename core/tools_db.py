@@ -368,6 +368,8 @@ TOOLS_DATABASE = {
         "category": "network",
         "subcategory": "Сетевое сканирование",
         "binary": "shodan",
+        "requires_api_key": True,
+        "configuration_hint": "Выполните: shodan init <API_KEY>",
         "description": "Поиск подключенных устройств, баннеров и открытых портов в сети Shodan.",
         "sudo_recommended": False,
         "input_label": "IP адрес или Поисковый запрос",

@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, pyqtSignal
 from gui.widgets.theme_manager import theme_manager, THEME_ACCENTS
-from core.tools_db import TOOLS_DATABASE, get_tool_path
+from core.tool_adapter import ToolState, tool_registry
 
 class SettingsTab(QWidget):
     wallpaper_opacity_changed = pyqtSignal(float)
@@ -59,16 +59,23 @@ class SettingsTab(QWidget):
         tools_layout = QVBoxLayout(box_tools)
         tools_layout.setSpacing(6)
 
-        for tool_key, tool_data in TOOLS_DATABASE.items():
-            path_str = get_tool_path(tool_data["binary"])
+        for adapter, health in tool_registry.audit(include_version=True):
             row = QHBoxLayout()
-            lbl_name = QLabel(f"• {tool_data['name']}:", self)
+            lbl_name = QLabel(f"• {adapter.name}:", self)
             lbl_name.setFixedWidth(140)
             lbl_name.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
             row.addWidget(lbl_name)
 
+            if health.state == ToolState.READY:
+                version = f" — {health.version}" if health.version else ""
+                path_str = f"✓ Ready{version}\n{health.path}"
+            elif health.state == ToolState.NOT_CONFIGURED:
+                path_str = f"⚠ API не настроен: {health.detail}"
+            else:
+                path_str = f"✗ Missing: {adapter.binary}"
             lbl_p = QLabel(path_str, self)
-            if "Не найдено" in path_str:
+            lbl_p.setWordWrap(True)
+            if health.state != ToolState.READY:
                 lbl_p.setStyleSheet("color: #e74c3c; font-style: italic;")
             else:
                 lbl_p.setStyleSheet("color: #2ecc71; font-family: monospace;")

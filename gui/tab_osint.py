@@ -1,8 +1,11 @@
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QScrollArea,
-                             QPushButton, QLineEdit, QLabel, QSplitter, QTabWidget)
+                             QPushButton, QLineEdit, QLabel, QSplitter, QTabWidget, QComboBox)
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, pyqtSignal
 from core.tools_db import TOOLS_DATABASE
+from core.tool_adapter import tool_registry
+from core.target_engine import target_engine
+from core.recon_profile import ReconLevel
 from gui.widgets.tool_card import ToolCardWidget
 from gui.widgets.results_console import ResultsConsole
 from gui.widgets.theme_manager import theme_manager
@@ -43,7 +46,20 @@ class OsintTab(QWidget):
 
         self.master_target_edit = QLineEdit(right_panel)
         self.master_target_edit.setPlaceholderText("Имя пользователя / Домен / Email / Файл...")
+        self.master_target_edit.textChanged.connect(self._show_target_type)
         master_box.addWidget(self.master_target_edit)
+
+        self.lbl_target_type = QLabel("Тип цели: —", right_panel)
+        self.lbl_target_type.setStyleSheet("color: #b8c7d9; font-size: 10px;")
+        master_box.addWidget(self.lbl_target_type)
+
+        level_row = QHBoxLayout()
+        level_row.addWidget(QLabel("Профиль разведки:", right_panel))
+        self.level_combo = QComboBox(right_panel)
+        for level in ReconLevel:
+            self.level_combo.addItem(level.display_name, level)
+        level_row.addWidget(self.level_combo)
+        master_box.addLayout(level_row)
 
         # Master Actions Row: [🚀 Запустить выбранные] + [☑️ Все] + [☐ Снять]
         actions_row = QHBoxLayout()
@@ -117,6 +133,28 @@ class OsintTab(QWidget):
         for card in self.tool_cards.values():
             card.cb_enable.setChecked(state)
 
+    def _show_target_type(self, value: str):
+        target = target_engine.parse(value)
+        label = target.target_type.value.upper() if target.is_valid else "НЕ ОПРЕДЕЛЁН"
+        self.lbl_target_type.setText(f"Тип цели: {label}")
+
+    def _build_command(self, tool_key: str, target_value: str, options: dict):
+        target = target_engine.parse(target_value)
+        adapter = tool_registry.get(tool_key)
+        if not target.is_valid:
+            self.console.append_output(f"[!] {target.errors[0]} Цель: {target_value}\n")
+            return None
+        if not adapter.supports(target):
+            expected = ", ".join(adapter.supported_targets)
+            self.console.append_output(
+                f"[!] {adapter.name} не поддерживает цель типа {target.target_type.value}. "
+                f"Ожидается: {expected}.\n"
+            )
+            return None
+        return adapter.build_command(
+            target.normalized_value, options, False, self.level_combo.currentData(),
+        )
+
     def _on_single_tool_run(self, tool_key: str, opts: dict, target: str):
         tool_data = TOOLS_DATABASE.get(tool_key)
         if not tool_data:
@@ -125,8 +163,9 @@ class OsintTab(QWidget):
         if not target:
             target = self.master_target_edit.text().strip() or tool_data.get("default_target", "")
 
-        cmd = tool_data["cmd_builder"](target, opts, False)
-        self.run_command_signal.emit(cmd, tool_data["name"], self.console)
+        cmd = self._build_command(tool_key, target, opts)
+        if cmd:
+            self.run_command_signal.emit(cmd, tool_data["name"], self.console)
 
     def _run_selected_tools(self):
         master_target = self.master_target_edit.text().strip()
@@ -137,8 +176,9 @@ class OsintTab(QWidget):
                 tool_data = TOOLS_DATABASE[tool_key]
                 target = card.get_target() or master_target or tool_data.get("default_target", "")
                 opts = card.get_options()
-                cmd = tool_data["cmd_builder"](target, opts, False)
-                selected_cmds.append((cmd, tool_data["name"]))
+                cmd = self._build_command(tool_key, target, opts)
+                if cmd:
+                    selected_cmds.append((cmd, tool_data["name"]))
 
         if not selected_cmds:
             self.console.append_output("[!] Не выбрано ни одного инструмента для запуска.\n")

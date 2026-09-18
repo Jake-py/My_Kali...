@@ -4,16 +4,22 @@ import os
 import sys
 import time
 from PyQt6.QtCore import QObject, pyqtSignal
+from core.tool_adapter import NormalizedResult, tool_registry
 
 class CommandWorker(QObject):
     output_signal = pyqtSignal(str) # Emits line of stdout/stderr
     finished_signal = pyqtSignal(int, float) # exit_code, duration_sec
     error_signal = pyqtSignal(str)
+    normalized_signal = pyqtSignal(object)
 
-    def __init__(self, cmd: list, sudo_password: str = ""):
+    def __init__(self, cmd: list, sudo_password: str = "", tool_key: str | None = None,
+                 target: str = ""):
         super().__init__()
         self.cmd = cmd
         self.sudo_password = sudo_password
+        self.tool_key = tool_key
+        self.target = target
+        self._output_lines = []
         self._is_cancelled = False
         self._process = None
 
@@ -50,11 +56,18 @@ class CommandWorker(QObject):
                     # Filter out raw sudo password prompt line if present
                     if "[sudo] password for" in line:
                         continue
+                    self._output_lines.append(line)
                     self.output_signal.emit(line)
 
             self._process.stdout.close()
             exit_code = self._process.wait()
             duration = time.time() - start_time
+
+            if self.tool_key and exit_code == 0:
+                adapter = tool_registry.get(self.tool_key)
+                self.normalized_signal.emit(
+                    adapter.normalize(self.target, "".join(self._output_lines))
+                )
 
             if self._is_cancelled:
                 self.output_signal.emit("\n[!] Процесс остановлен пользователем.\n")

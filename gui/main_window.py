@@ -5,7 +5,10 @@ from PyQt6.QtGui import QPixmap, QPainter, QBrush, QColor, QFont, QIcon
 from PyQt6.QtCore import Qt, QThread
 from core.sudo_manager import SudoManager
 from core.tool_runner import CommandWorker
+from core.tool_adapter import tool_registry
 from core.leakcheck_worker import LeakCheckWorker
+from core.recon_controller import ReconController
+from core.recon_profile import ReconLevel
 from gui.widgets.theme_manager import theme_manager
 from gui.widgets.kali_sudo_widget import KaliSudoWidget
 from gui.widgets.results_console import ResultsConsole
@@ -27,6 +30,9 @@ class MainWindow(QMainWindow):
         self.current_worker = None
         self.worker_thread = None
         self.active_console = None
+        self.recon_controller = ReconController(level=ReconLevel.QUICK)
+        self.recon_queue_active = False
+        self.recon_console = None
         self.wallpaper_opacity = 0.85
 
         # Background Pixmap (red_ice.png)
@@ -144,7 +150,14 @@ class MainWindow(QMainWindow):
         self.wallpaper_opacity = val
         self.update()
 
-    def _execute_command(self, cmd_list: list, tool_name: str, target_console: ResultsConsole):
+    def _execute_command(
+        self,
+        cmd_list: list,
+        tool_name: str,
+        target_console: ResultsConsole,
+        tool_key: str | None = None,
+        target_value: str = "",
+    ):
         if self.worker_thread and self.worker_thread.isRunning():
             QMessageBox.warning(self, "Выполнение", "Уже запущен другой процесс. Дождитесь завершения или остановите его.")
             return
@@ -155,15 +168,35 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(True)
         self.active_console.set_status(f"Выполняется: {tool_name}", is_running=True)
 
+        adapter_context = next(
+            ((adapter.key, target_value or cmd_list[-1]) for adapter in tool_registry.all()
+             if (tool_key == adapter.key or adapter.name == tool_name) and cmd_list),
+            (tool_key, target_value),
+        )
+
         self.worker_thread = QThread(self)
-        self.current_worker = CommandWorker(final_cmd, self.sudo_mgr.password)
+        self.current_worker = CommandWorker(
+            final_cmd, self.sudo_mgr.password, *adapter_context,
+        )
         self.current_worker.moveToThread(self.worker_thread)
 
         self.worker_thread.started.connect(self.current_worker.run)
         self.current_worker.output_signal.connect(self.active_console.append_output)
+        self.current_worker.normalized_signal.connect(self._on_normalized_result)
         self.current_worker.finished_signal.connect(self._on_worker_finished)
 
         self.worker_thread.start()
+
+    def _on_normalized_result(self, result):
+        self.active_console.append_output(
+            f"[i] Нормализовано записей: {len(result.records)} ({result.tool})\n"
+        )
+        if self.recon_queue_active:
+            scheduled = self.recon_controller.complete(result)
+            if scheduled:
+                self.active_console.append_output(
+                    f"[i] Поставлено в очередь новых целей: {scheduled}\n"
+                )
 
     def _execute_leakcheck(self, query: str, target_console: ResultsConsole):
         if self.worker_thread and self.worker_thread.isRunning():
@@ -189,12 +222,41 @@ class MainWindow(QMainWindow):
         if self.active_console:
             self.active_console.set_status(f"Завершено ({duration:.2f}с)", is_running=False)
 
+        if self.recon_queue_active:
+            self._drain_recon_queue()
+
         if self.worker_thread:
             self.worker_thread.quit()
             self.worker_thread.wait()
             self.worker_thread = None
             self.current_worker = None
             self.active_console = None
+
+    def _drain_recon_queue(self):
+        if not self.recon_queue_active or (self.worker_thread and self.worker_thread.isRunning()):
+            return
+
+        next_item = self.recon_controller.next_item()
+        if next_item is None:
+            self.recon_queue_active = False
+            self.recon_console = None
+            return
+
+        self.recon_console = self.tab_osint.console
+        self._execute_command(
+            next_item.build_command(),
+            next_item.adapter.name,
+            self.recon_console,
+            next_item.tool_key,
+            next_item.target.target.normalized_value,
+        )
+
+    def start_recon_from_targets(self, values: list[str], level: ReconLevel = ReconLevel.QUICK, tool_keys: list[str] | None = None):
+        self.recon_controller = ReconController(level=level, tool_keys=tool_keys)
+        self.recon_queue_active = True
+        self.recon_controller.seed(values)
+        self.recon_console = self.tab_osint.console
+        self._drain_recon_queue()
 
     def _stop_current_process(self):
         if self.current_worker:
